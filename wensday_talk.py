@@ -4,10 +4,22 @@ import subprocess
 from tempfile import NamedTemporaryFile
 from typing import Any, Dict, List, Tuple, Optional
 
-from elevenlabs.client import ElevenLabs
 import json
 from datetime import datetime
-from wensday_voice import ask_wensday
+from wensday_core.brain import ask_wensday
+
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
+
+if load_dotenv is not None:
+    load_dotenv()
+
+try:
+    from elevenlabs.client import ElevenLabs
+except ImportError:
+    ElevenLabs = None
 
 # -----------------------------
 # 1. Setup ElevenLabs client
@@ -18,8 +30,6 @@ from wensday_voice import ask_wensday
 # You only do that once per terminal session.
 
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
-if not ELEVENLABS_API_KEY:
-    raise RuntimeError("ELEVENLABS_API_KEY is not set in your environment.")
 
 # ElevenLabs Voice ID for Wensday's voice
 # You can override this from your terminal:
@@ -27,8 +37,21 @@ if not ELEVENLABS_API_KEY:
 ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "l6JdXREaWV2XUOQFjMPH")
 
 
-# Create ElevenLabs client instance
-voice_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+voice_client = None
+
+
+def get_voice_client():
+    """Create the ElevenLabs client only when voice playback is used."""
+    global voice_client
+    if voice_client is not None:
+        return voice_client
+    if ElevenLabs is None:
+        raise RuntimeError("The elevenlabs package is not installed. Run: pip install -r requirements.txt")
+    api_key = os.environ.get("ELEVENLABS_API_KEY")
+    if not api_key:
+        raise RuntimeError("ELEVENLABS_API_KEY is not set. Voice output is disabled until it is configured.")
+    voice_client = ElevenLabs(api_key=api_key)
+    return voice_client
 
 
 # -----------------------------
@@ -221,7 +244,7 @@ def speak_with_wensday(prompt: str, mode: str, history: List[Tuple[str, str]]) -
         if voice_settings:
             extra_kwargs["voice_settings"] = voice_settings
 
-        audio_stream = voice_client.text_to_speech.convert(
+        audio_stream = get_voice_client().text_to_speech.convert(
             voice_id=ELEVENLABS_VOICE_ID,
             model_id="eleven_multilingual_v2",
             optimize_streaming_latency=1,

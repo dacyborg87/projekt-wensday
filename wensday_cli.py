@@ -121,6 +121,7 @@ def main() -> None:
     - Lets you interrupt mid‑sentence with Ctrl+C
     """
     # Local import so this file can be edited/tested without circular import headaches.
+    from wensday_core.brain import ask_wensday
     from wensday_voice import stream_wensday_reply
 
     print("Wensday CLI (type 'exit' to quit)")
@@ -160,17 +161,19 @@ def main() -> None:
                     )
                 continue
 
-            # Inject mode instructions into the user message (since stream_wensday_reply has no system kwarg)
+            # Inject mode instructions before sending the message to the centralized brain.
             prompt = apply_mode_to_user_text(user_text, current_mode)
 
             print("\nWensday: ", end="", flush=True)
 
-            # Stream text + voice. We buffer streamed text and only send larger chunks to TTS
-            # to reduce choppiness (fewer mp3 segments, fewer `afplay` restarts).
+            reply = ask_wensday(prompt, voice_mode=True)
+
+            # Stream text + voice. The voice helper is responsible for failing softly
+            # when ElevenLabs is not configured.
             assistant_text = ""
             buffer = ""
 
-            for chunk in stream_wensday_reply(prompt, voice_mode=True):
+            for chunk in stream_wensday_reply(reply, voice_mode=True):
                 # `stream_wensday_reply` may yield either plain strings or dicts
                 if isinstance(chunk, dict):
                     token = chunk.get("sentence", "")

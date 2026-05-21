@@ -6,26 +6,40 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from elevenlabs.client import ElevenLabs
-from wensday_voice import ask_wensday
+from wensday_core.brain import ask_wensday
+
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
+
+if load_dotenv is not None:
+    load_dotenv()
+
+try:
+    from elevenlabs.client import ElevenLabs
+except ImportError:
+    ElevenLabs = None
 
 # ---------- CONFIG: API KEYS & CLIENTS ----------
 
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 ELEVEN_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
 VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID")
 
-if not OPENAI_API_KEY:
-    raise RuntimeError("OPENAI_API_KEY is not set in the environment")
+eleven_client = None
 
-if not ELEVEN_API_KEY:
-    raise RuntimeError("ELEVENLABS_API_KEY is not set in the environment")
 
-if not VOICE_ID:
-    raise RuntimeError("ELEVENLABS_VOICE_ID is not set in the environment")
-
-# ElevenLabs client
-eleven_client = ElevenLabs(api_key=ELEVEN_API_KEY)
+def get_eleven_client():
+    global eleven_client
+    if eleven_client is not None:
+        return eleven_client
+    if ElevenLabs is None:
+        raise RuntimeError("The elevenlabs package is not installed. Run: pip install -r requirements.txt")
+    api_key = os.environ.get("ELEVENLABS_API_KEY")
+    if not api_key:
+        raise RuntimeError("ELEVENLABS_API_KEY is not set. Audio output is disabled until it is configured.")
+    eleven_client = ElevenLabs(api_key=api_key)
+    return eleven_client
 
 # ---------- FASTAPI APP SETUP ----------
 
@@ -70,10 +84,13 @@ def speak(req: SpeakRequest):
     # 1) Get Wensday's reply, already in your tone
     reply_text = ask_wensday(req.prompt, voice_mode=True)
 
+    if not os.environ.get("ELEVENLABS_API_KEY") or not os.environ.get("ELEVENLABS_VOICE_ID"):
+        return SpeakResponse(text=reply_text, audio_base64="")
+
     # 2) Generate audio with ElevenLabs (stream)
-    audio_stream = eleven_client.text_to_speech.convert(
+    audio_stream = get_eleven_client().text_to_speech.convert(
         text=reply_text,
-        voice_id=VOICE_ID,
+        voice_id=os.environ.get("ELEVENLABS_VOICE_ID"),
         model_id="eleven_multilingual_v2",
         output_format="mp3_44100_128",
     )

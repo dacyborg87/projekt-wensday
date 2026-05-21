@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Wensday Test UI</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #05060a;
+      color: #f5f5f5;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem;
+      gap: 1rem;
+    }
+    .card {
+      background: #11131a;
+      padding: 1.5rem;
+      border-radius: 16px;
+      width: 100%;
+      max-width: 600px;
+      box-shadow: 0 0 20px rgba(0,0,0,0.4);
+    }
+    input {
+      width: 100%;
+      padding: 0.75rem;
+      border-radius: 10px;
+      border: none;
+      outline: none;
+      margin-bottom: 0.75rem;
+    }
+    button {
+      padding: 0.6rem 1.2rem;
+      border-radius: 999px;
+      border: none;
+      cursor: pointer;
+      font-weight: 600;
+      margin-right: 0.5rem;
+    }
+    .logo {
+      display: block;
+      margin: 0 auto 1rem auto;
+      max-width: 200px;
+      width: 100%;
+    }
+    #wensday-text {
+      margin-top: 1rem;
+      white-space: pre-wrap;
+      font-size: 0.95rem;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Talk to Wensday (Test)</h2>
+    <img src="wensday_logo.png" alt="Wensday Logo" class="logo" />
+    <input id="user-input" type="text" placeholder="Ask Wensday something..." />
+    <button id="send-btn">Send</button>
+    <div id="wensday-text"></div>
+  </div>
+
+  <script>
+    const inputEl = document.getElementById("user-input");
+    const sendBtn = document.getElementById("send-btn");
+    const textEl = document.getElementById("wensday-text");
+
+    async function speakWithWensday() {
+      const prompt = inputEl.value.trim();
+      if (!prompt) return;
+
+      textEl.textContent = "Thinking...";
+
+      try {
+        const res = await fetch("http://127.0.0.1:8000/api/speak", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt }),
+        });
+
+        if (!res.ok) {
+          textEl.textContent = "Error talking to Wensday (HTTP " + res.status + ").";
+          return;
+        }
+
+        const data = await res.json();
+        const replyText = data.text;
+        const audioB64 = data.audio_base64;
+
+        // Show text
+        textEl.textContent = replyText;
+
+        // Decode base64 → bytes → audio blob
+        const byteString = atob(audioB64);
+        const len = byteString.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+          bytes[i] = byteString.charCodeAt(i);
+        }
+
+        const blob = new Blob([bytes], { type: "audio/mpeg" });
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        audio.play();
+      } catch (err) {
+        console.error(err);
+        textEl.textContent = "Error talking to Wensday (check console).";
+      }
+    }
+
+    sendBtn.addEventListener("click", speakWithWensday);
+    inputEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") speakWithWensday();
+    });
+  </script>
+</body>
+</html>

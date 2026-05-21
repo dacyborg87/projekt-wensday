@@ -1,0 +1,39 @@
+# Virtual environments
+venv/
+.env/
+
+# Environment variables
+.env
+.env.local
+
+# Python cache
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# VS Code
+.vscode/
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+temp/
+
+# Secrets
+secrets.json
+config/secrets.py
+
+
+# Audio generated files
+*.mp3
+*.wav
+
+# TTS cache
+.tts_cache/
+
+# Runtime memory
+wensday_memory.json

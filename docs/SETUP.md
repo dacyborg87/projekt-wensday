@@ -58,6 +58,14 @@ After installing dependencies and configuring `.env`, run these checks from the 
 .venv/bin/python -m py_compile wensday_core/*.py *.py
 ```
 
+Run the memory tests:
+
+```bash
+.venv/bin/python -m unittest discover -s tests
+```
+
+Audit events are written to `wensday_audit.jsonl` by default. This file is ignored by git.
+
 ```bash
 .venv/bin/python - <<'PY'
 from wensday_core.brain import build_prompt, categorize_message
@@ -124,5 +132,6 @@ python wensday_status.py
 ## Notes
 
 - `wensday_core/brain.py` is now the stable import location for the existing `ask_wensday` text brain.
+- Long-term memory is explicit. Use commands like `remember ...`, `forget ...`, `what do you remember`, and `search memory ...`.
 - The older scripts are still present to preserve current behavior.
 - Missing OpenAI or ElevenLabs keys should produce readable runtime messages instead of crashing during import.

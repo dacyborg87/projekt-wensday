@@ -38,3 +38,4 @@ config/secrets.py
 
 # Runtime memory
 wensday_memory.json
+wensday_audit.jsonl

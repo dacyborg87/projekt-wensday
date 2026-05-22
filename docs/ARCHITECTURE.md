@@ -32,15 +32,33 @@ Projekt Wensday is a working prototype for a personal AI assistant with text, vo
 
 ## Core Systems
 
+### Orchestrator
+
+`wensday_core/orchestrator.py` is the controlled Phase 4 orchestration layer. Existing interfaces still call `ask_wensday()`, but `ask_wensday()` now delegates to `WensdayOrchestrator` for request classification, defensive policy checks, memory retrieval, read-only plugin routing, explainable prompt context, audit hooks, and approval placeholders.
+
+The orchestrator is defensive/read-only by default. It does not execute system-changing actions.
+
+### Policy
+
+`wensday_core/policy.py` contains conservative guardrails. It blocks clearly offensive cyber requests before OpenAI and returns an approval-required message for requests that could change system state.
+
+### Audit
+
+`wensday_core/audit.py` writes minimal JSONL audit events to `wensday_audit.jsonl` by default. Audit logging is fail-soft and redacts obvious secrets. It records request metadata such as request type, mode, memory count, plugin name, and policy decisions, not full private memory content.
+
+### Plugins
+
+`wensday_core/plugins.py` defines a read-only defensive plugin placeholder interface. Phase 4 plugins must be read-only. Future phases can wrap SOC helpers such as Wazuh summaries, lab status checks, Suricata log readers, incident summaries, and threat-intel enrichment.
+
 ### Brain
 
-`wensday_core/brain.py` is the stable production import location for:
+`wensday_core/brain.py` remains the stable compatibility import location for:
 
 - `categorize_message`
 - `build_prompt`
 - `ask_wensday`
 
-It builds Wensday's prompt from personality instructions, mode context, recent memory, and the user's message. It calls OpenAI through `wensday_core/config.py` and writes conversation memory through `wensday_core/memory.py`.
+It keeps legacy helpers available, while `ask_wensday()` delegates to `WensdayOrchestrator`.
 
 ### Personality
 
@@ -48,7 +66,30 @@ It builds Wensday's prompt from personality instructions, mode context, recent m
 
 ### Memory
 
-`wensday_core/memory.py` stores memories in a local JSON file named `wensday_memory.json` by default. It supports adding memories, getting recent memories, and simple keyword search.
+`wensday_core/memory.py` stores long-term memories in a local JSON file named `wensday_memory.json` by default. It is the canonical memory module.
+
+New memories use a structured JSON shape:
+
+- `id`
+- `category`
+- `title`
+- `content`
+- `tags`
+- `sensitivity`
+- `created_at`
+- `updated_at`
+- `source`
+
+Older `text/category/timestamp` memories still load through a compatibility normalization path.
+
+Memory is explicit in the current stabilization phase. Wensday no longer saves every user message and assistant reply automatically. The brain handles these commands before calling OpenAI:
+
+- `remember ...`
+- `forget ...`
+- `what do you remember`
+- `search memory ...`
+
+The orchestrator retrieves relevant memories with simple keyword and category scoring through `get_relevant_memories(user_input, limit=5)`. Vector search and embeddings are intentionally not part of this phase.
 
 `wensday_core/wensday.py` currently duplicates memory behavior and should be consolidated later.
 
@@ -88,7 +129,7 @@ static/index.html
   -> wensday_web.chat_endpoint
   -> wensday_core.brain.ask_wensday
   -> OpenAI Responses API
-  -> wensday_core.memory.add_memory
+  -> explicit memory commands may call wensday_core.memory.add_memory
   -> JSON reply
 ```
 

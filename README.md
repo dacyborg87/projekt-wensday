@@ -2,9 +2,7 @@
 
 Wensday OS is an AI-assisted defensive operations and personal command platform prototype. The project focuses on structured memory, controlled orchestration, explainable workflows, audit logging, policy guardrails, and future SOC-style cybersecurity tooling.
 
-Suggested GitHub repo description:
 
-> AI-assisted defensive operations and personal command platform focused on memory, orchestration, explainable workflows, and SOC-style cybersecurity tooling.
 
 ## Project Summary
 

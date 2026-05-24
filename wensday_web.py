@@ -6,6 +6,7 @@ from pydantic import BaseModel
 import os
 import httpx
 
+from dashboard_routes import router as dashboard_router
 from wensday_core.brain import ask_wensday  # use the brain you already built
 
 try:
@@ -17,6 +18,7 @@ if load_dotenv is not None:
     load_dotenv()
 
 app = FastAPI(title="Wensday OS")
+app.include_router(dashboard_router, prefix="")
 
 
 # -------- Models --------

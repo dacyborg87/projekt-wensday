@@ -2,8 +2,9 @@
 
 from dataclasses import dataclass, field
 import re
+from typing import Any
 
-from wensday_core.audit import write_audit_event
+from wensday_core.audit import redact, write_audit_event
 from wensday_core.config import get_model_name, get_openai_client
 from wensday_core.memory import format_memories_for_prompt, get_relevant_memories
 from wensday_core.plugins import PluginRegistry, build_default_registry
@@ -27,10 +28,60 @@ class WensdayResponse:
     evidence: list[str] = field(default_factory=list)
     next_steps: list[str] = field(default_factory=list)
     requires_approval: bool = False
+    explainable: "ExplainableResponse | None" = None
 
     def to_text(self) -> str:
         return self.answer
 
+
+@dataclass
+class ExplainableResponse:
+    """Dashboard-safe explanation envelope for operational Wensday responses."""
+
+    summary: str
+    evidence: list[str] = field(default_factory=list)
+    reasoning: list[str] = field(default_factory=list)
+    confidence: str = "medium"
+    recommended_next_checks: list[str] = field(default_factory=list)
+    memory_used: list[str] = field(default_factory=list)
+    plugins_queried: list[str] = field(default_factory=list)
+    policy_result: str = "Allowed defensive/read-only request."
+    unverified_items: list[str] = field(default_factory=list)
+
+    def to_dashboard(self, request_type: str, mode: str, output: str) -> dict[str, Any]:
+        """Return a secret-redacted shape for the read-only dashboard API."""
+        reasoning_steps = [
+            {"step": index, "label": item, "status": "done"}
+            for index, item in enumerate(self.reasoning, start=1)
+        ]
+        if not reasoning_steps:
+            reasoning_steps = [
+                {"step": 1, "label": "No reasoning trace recorded for this response.", "status": "skipped"}
+            ]
+
+        payload = {
+            "query": f"{request_type} / {mode}",
+            "request_type": request_type,
+            "mode": mode,
+            "summary": self.summary,
+            "evidence": self.evidence,
+            "reasoning": self.reasoning,
+            "reasoning_steps": reasoning_steps,
+            "output": output,
+            "confidence": self.confidence,
+            "recommended_next_checks": self.recommended_next_checks,
+            "memory_used": self.memory_used,
+            "plugins_queried": self.plugins_queried,
+            "policy_result": self.policy_result,
+            "unverified_items": self.unverified_items,
+            "model": get_model_name(),
+            "tokens": None,
+            "mitre_tags": _extract_mitre_tags(output),
+        }
+        return redact(payload)
+
+
+OPERATIONAL_REQUEST_TYPES = {"soc_summary", "incident_summary", "threat_intel"}
 
 REQUEST_KEYWORDS = {
     "soc_summary": {"wazuh", "suricata", "soc", "siem", "alert", "alerts", "ids"},
@@ -40,6 +91,8 @@ REQUEST_KEYWORDS = {
     "project_planning": {"project", "roadmap", "plan", "milestone"},
     "learning_help": {"learn", "study", "homework", "class", "explain"},
 }
+
+_LATEST_EXPLAINABLE_RESPONSE: dict[str, Any] | None = None
 
 MODE_INSTRUCTIONS = {
     "personal": "Personal assistant mode: be clear, useful, and concise.",
@@ -73,6 +126,22 @@ def classify_request(user_input: str) -> str:
         if tokens & keywords:
             return request_type
     return "general_chat"
+
+
+def is_operational_request(request_type: str, mode: str = "personal") -> bool:
+    """Return whether a request should receive an explainable operational envelope."""
+    return request_type in OPERATIONAL_REQUEST_TYPES or mode in {
+        "soc_analyst",
+        "incident_commander",
+        "auditor",
+    }
+
+
+def get_latest_explainable_response() -> dict[str, Any] | None:
+    """Read the latest dashboard-safe operational response snapshot."""
+    if _LATEST_EXPLAINABLE_RESPONSE is None:
+        return None
+    return dict(_LATEST_EXPLAINABLE_RESPONSE)
 
 
 def mode_for_request(request_type: str, requested_mode: str = "personal") -> str:
@@ -153,26 +222,9 @@ class WensdayOrchestrator:
                     "reason": policy.reason,
                 },
             )
-            return self._policy_response(request, policy)
-
-        plugin_result = self.plugin_registry.route(request)
-        if plugin_result.handled:
-            write_audit_event(
-                "plugin_used",
-                {
-                    "request_type": request.request_type,
-                    "mode": request.mode,
-                    "plugin": plugin_result.plugin_name,
-                    "evidence_count": len(plugin_result.evidence),
-                },
-            )
-            return WensdayResponse(
-                answer=plugin_result.answer,
-                request_type=request.request_type,
-                mode=request.mode,
-                confidence=plugin_result.confidence,
-                evidence=plugin_result.evidence,
-            )
+            response = self._policy_response(request, policy)
+            self._record_explainable(request, response, policy, memories=[], plugins_queried=[])
+            return response
 
         memories = get_relevant_memories(request.user_input, limit=5)
         write_audit_event(
@@ -185,6 +237,28 @@ class WensdayOrchestrator:
             },
         )
 
+        plugins_queried = self._plugin_names()
+        plugin_result = self.plugin_registry.route(request)
+        if plugin_result.handled:
+            write_audit_event(
+                "plugin_used",
+                {
+                    "request_type": request.request_type,
+                    "mode": request.mode,
+                    "plugin": plugin_result.plugin_name,
+                    "evidence_count": len(plugin_result.evidence),
+                },
+            )
+            response = WensdayResponse(
+                answer=plugin_result.answer,
+                request_type=request.request_type,
+                mode=request.mode,
+                confidence=plugin_result.confidence,
+                evidence=plugin_result.evidence,
+            )
+            self._record_explainable(request, response, policy, memories, plugins_queried, plugin_result.plugin_name)
+            return response
+
         prompt = self.build_prompt(request, memories)
         answer = self.call_model(prompt)
         write_audit_event(
@@ -196,7 +270,9 @@ class WensdayOrchestrator:
                 "requires_approval": False,
             },
         )
-        return WensdayResponse(answer=answer, request_type=request.request_type, mode=request.mode)
+        response = WensdayResponse(answer=answer, request_type=request.request_type, mode=request.mode)
+        self._record_explainable(request, response, policy, memories, plugins_queried)
+        return response
 
     def handle_memory_command(self, request: WensdayRequest) -> WensdayResponse | None:
         if request.request_type != "memory_command":
@@ -249,3 +325,141 @@ class WensdayOrchestrator:
             confidence="high",
             requires_approval=policy.requires_approval,
         )
+
+    def _plugin_names(self) -> list[str]:
+        return [
+            str(getattr(plugin, "name", "unnamed"))
+            for plugin in getattr(self.plugin_registry, "_plugins", [])
+        ]
+
+    def _record_explainable(
+        self,
+        request: WensdayRequest,
+        response: WensdayResponse,
+        policy: PolicyDecision,
+        memories: list[dict],
+        plugins_queried: list[str],
+        plugin_used: str | None = None,
+    ) -> None:
+        if not is_operational_request(request.request_type, request.mode) and policy.allowed:
+            return
+
+        explainable = self._build_explainable(
+            request=request,
+            response=response,
+            policy=policy,
+            memories=memories,
+            plugins_queried=plugins_queried,
+            plugin_used=plugin_used,
+        )
+        response.explainable = explainable
+
+        global _LATEST_EXPLAINABLE_RESPONSE
+        _LATEST_EXPLAINABLE_RESPONSE = explainable.to_dashboard(
+            request_type=request.request_type,
+            mode=request.mode,
+            output=response.answer,
+        )
+
+        write_audit_event(
+            "explainable_response_recorded",
+            {
+                "request_type": request.request_type,
+                "mode": request.mode,
+                "confidence": explainable.confidence,
+                "evidence_count": len(explainable.evidence),
+                "memory_count": len(explainable.memory_used),
+                "plugins_queried": explainable.plugins_queried,
+                "policy_result": explainable.policy_result,
+            },
+        )
+
+    def _build_explainable(
+        self,
+        request: WensdayRequest,
+        response: WensdayResponse,
+        policy: PolicyDecision,
+        memories: list[dict],
+        plugins_queried: list[str],
+        plugin_used: str | None = None,
+    ) -> ExplainableResponse:
+        memory_used = [_memory_label(memory) for memory in memories]
+        evidence = list(response.evidence)
+        if memory_used:
+            evidence.append(f"{len(memory_used)} relevant memory item(s) were available.")
+        if plugin_used:
+            evidence.append(f"Read-only plugin used: {plugin_used}.")
+
+        reasoning = [
+            f"Request classified as {request.request_type}.",
+            f"Mode resolved to {request.mode}.",
+            f"Policy decision: {policy.reason}",
+            f"Relevant memories retrieved: {len(memory_used)}.",
+        ]
+        if plugin_used:
+            reasoning.append(f"Plugin route selected: {plugin_used}.")
+        elif is_operational_request(request.request_type, request.mode):
+            reasoning.append("No read-only plugin handled this request; response used the core model path.")
+
+        unverified = []
+        if not plugin_used and is_operational_request(request.request_type, request.mode):
+            unverified.append("No external SOC or threat-intel integration verified this response.")
+        if not memories:
+            unverified.append("No relevant long-term memory was available for this request.")
+        if response.requires_approval:
+            unverified.append("Any system-changing action remains unexecuted and requires human approval.")
+
+        next_checks = response.next_steps or _default_next_checks(request.request_type)
+
+        return ExplainableResponse(
+            summary=_first_sentence(response.answer),
+            evidence=evidence,
+            reasoning=reasoning,
+            confidence=response.confidence,
+            recommended_next_checks=next_checks,
+            memory_used=memory_used,
+            plugins_queried=plugins_queried,
+            policy_result=policy.reason,
+            unverified_items=unverified,
+        )
+
+
+def _first_sentence(text: str) -> str:
+    cleaned = " ".join((text or "").split())
+    if not cleaned:
+        return "No summary available."
+    match = re.search(r"(.+?[.!?])(?:\s|$)", cleaned)
+    return match.group(1) if match else cleaned[:240]
+
+
+def _memory_label(memory: dict) -> str:
+    title = str(memory.get("title") or memory.get("id") or "memory")
+    category = str(memory.get("category") or "general")
+    return f"{title} [{category}]"
+
+
+def _default_next_checks(request_type: str) -> list[str]:
+    if request_type == "threat_intel":
+        return [
+            "Validate IOCs with an approved threat-intel source.",
+            "Check whether affected assets appear in recent audit or SIEM events.",
+            "Document assumptions before escalation.",
+        ]
+    if request_type == "incident_summary":
+        return [
+            "Confirm timeline timestamps against source logs.",
+            "Identify affected assets and owners.",
+            "Flag containment actions for human approval.",
+        ]
+    if request_type == "soc_summary":
+        return [
+            "Review source alerts in the SIEM or EDR console.",
+            "Correlate host, user, and network context.",
+            "Escalate only verified findings through the approved workflow.",
+        ]
+    return ["Review evidence and verify assumptions before taking action."]
+
+
+def _extract_mitre_tags(text: str) -> list[str]:
+    tags = sorted(set(re.findall(r"\bT\d{4}(?:\.\d{3})?\b", text or "")))
+    return tags[:12]
